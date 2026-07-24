@@ -1,0 +1,2745 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>SKU Promo Drill-down</title>
+  <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+  <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+  <style>html,body{margin:0;padding:0;background:#f4f5f7;}#root{min-height:100vh;}</style>
+</head>
+<body>
+  <div id="root"></div>
+  <script>
+const {
+  useState,
+  useMemo,
+  useEffect
+} = React;
+let DATA = null; // filled from data.json at load
+
+// ---------- palette (mirrors reference: green good / amber caution / red off / gray neutral) ----------
+const C = {
+  ink: "#1a1d21",
+  sub: "#6b7280",
+  faint: "#9ca3af",
+  line: "#e5e7eb",
+  card: "#ffffff",
+  bg: "#f7f8f9",
+  green: "#2f7d55",
+  greenBg: "#e4f0e8",
+  amber: "#a76b1e",
+  amberBg: "#f6ecd9",
+  red: "#b23b32",
+  redBg: "#f7e2df",
+  gray: "#8a8f98"
+};
+const fmtSP = n => n == null ? "—" : "₹" + n.toFixed(0);
+const fmtSP1 = n => n == null ? "—" : "₹" + n.toFixed(1);
+const fmtPct = (n, d = 1) => n == null ? "—" : n.toFixed(d) + "%";
+const fmtPP = n => n == null ? "—" : (n >= 0 ? "+" : "") + n.toFixed(1) + "pp";
+const fmtL = n => n == null ? "—" : "₹" + (n / 100000).toFixed(2) + "L";
+const fmtINR = n => n == null ? "—" : "₹" + Math.round(n).toLocaleString("en-IN");
+const shortDate = iso => {
+  const [, m, d] = iso.split("-");
+  const mm = ["", "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"][+m];
+  return `${mm} ${+d}`;
+};
+
+// status string -> semantic tone
+function tone(status) {
+  if (!status) return "neutral";
+  const s = status.toLowerCase();
+  if (s.startsWith("flag") || s.includes("off price") || s.includes("not moving") || s.includes("not citable")) return "bad";
+  if (s.includes("moving") || s.includes("drift") || s.includes("swing") || s.includes("competitor")) return "warn";
+  if (s.startsWith("ok") || s.includes("implemented") || s.includes("at reco") || s.includes("clear")) return "good";
+  return "neutral";
+}
+const toneColor = {
+  good: C.green,
+  warn: C.amber,
+  bad: C.red,
+  neutral: C.gray
+};
+const toneBg = {
+  good: C.greenBg,
+  warn: C.amberBg,
+  bad: C.redBg,
+  neutral: "#eef0f2"
+};
+
+// ---------- tiny inline components ----------
+function Dot({
+  t
+}) {
+  return /*#__PURE__*/React.createElement("span", {
+    style: {
+      display: "inline-block",
+      width: 9,
+      height: 9,
+      borderRadius: "50%",
+      background: toneColor[t] || C.gray,
+      flex: "0 0 auto",
+      marginTop: 6
+    }
+  });
+}
+function Pill({
+  t,
+  children
+}) {
+  return /*#__PURE__*/React.createElement("span", {
+    style: {
+      background: toneBg[t],
+      color: toneColor[t],
+      fontSize: 12,
+      fontWeight: 600,
+      padding: "3px 10px",
+      borderRadius: 999,
+      whiteSpace: "nowrap"
+    }
+  }, children);
+}
+
+// ---------- panel availability + graceful fallback ----------
+// DATA.meta may be absent (older builds) -> treat everything as available.
+// Lazy getter: DATA may be loaded asynchronously (hosted build fetches data.json),
+// so we must not read it at module-evaluation time.
+const getMeta = () => typeof DATA !== "undefined" && DATA && DATA.meta ? DATA.meta : {
+  panels: {},
+  missing: [],
+  title: "SKU Promo Drill-down"
+};
+const panelOK = key => {
+  const p = getMeta().panels;
+  return p ? p[key] !== false : true;
+};
+// true if an array has at least one non-null value
+const hasData = arr => Array.isArray(arr) && arr.some(v => v != null);
+
+// Inline placeholder shown when a panel's source CSV was missing.
+function NoData({
+  label
+}) {
+  return /*#__PURE__*/React.createElement("div", {
+    style: {
+      border: `1px dashed ${C.line}`,
+      background: "#fafbfb",
+      borderRadius: 10,
+      padding: "34px 20px",
+      textAlign: "center",
+      color: C.sub,
+      fontSize: 15
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontWeight: 700,
+      color: C.ink,
+      marginBottom: 4
+    }
+  }, "Data not available for this panel"), /*#__PURE__*/React.createElement("div", null, label ? `Missing source: ${label}` : "The source CSV for this section wasn't found in the data folder."));
+}
+
+// Banner listing any CSVs that were missing at build time.
+function MissingBanner() {
+  const missing = getMeta().missing || [];
+  if (!missing.length) return null;
+  return /*#__PURE__*/React.createElement("div", {
+    style: {
+      border: `1px solid ${C.amber}`,
+      background: C.amberBg,
+      borderRadius: 10,
+      padding: "14px 18px",
+      margin: "0 0 22px",
+      fontSize: 14.5,
+      color: C.ink
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontWeight: 700,
+      marginBottom: 6
+    }
+  }, "Some data files were missing - ", missing.length, " panel source", missing.length > 1 ? "s" : "", " unavailable."), /*#__PURE__*/React.createElement("div", {
+    style: {
+      color: C.sub,
+      marginBottom: 8
+    }
+  }, "The dashboard still built. Add these CSVs to the data folder and rebuild to fill the empty panels:"), /*#__PURE__*/React.createElement("ul", {
+    style: {
+      margin: 0,
+      paddingLeft: 20
+    }
+  }, missing.map((m, i) => /*#__PURE__*/React.createElement("li", {
+    key: i,
+    style: {
+      fontFamily: "ui-monospace, monospace",
+      fontSize: 13.5,
+      marginBottom: 2
+    }
+  }, m))));
+}
+function Card({
+  children,
+  style,
+  id
+}) {
+  return /*#__PURE__*/React.createElement("div", {
+    id: id,
+    style: {
+      background: C.card,
+      border: `1px solid ${C.line}`,
+      borderRadius: 12,
+      padding: 22,
+      scrollMarginTop: 16,
+      ...style
+    }
+  }, children);
+}
+
+// eyebrow label
+function Eyebrow({
+  children,
+  right
+}) {
+  return /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      justifyContent: "space-between",
+      alignItems: "baseline",
+      textTransform: "uppercase",
+      letterSpacing: 0.6,
+      fontSize: 12,
+      fontWeight: 700,
+      color: C.sub,
+      marginBottom: 14
+    }
+  }, /*#__PURE__*/React.createElement("span", null, children), right && /*#__PURE__*/React.createElement("span", {
+    style: {
+      fontWeight: 600
+    }
+  }, right));
+}
+
+// ---------- SVG chart primitives ----------
+function useScale(vals, pad = 0.08) {
+  const clean = vals.filter(v => v != null);
+  let min = Math.min(...clean),
+    max = Math.max(...clean);
+  const span = max - min || 1;
+  min -= span * pad;
+  max += span * pad;
+  return {
+    min,
+    max
+  };
+}
+
+// De-collide a set of vertically-placed SVG text labels that share the same x anchor.
+// Each item: { key, y }. Returns { [key]: adjustedY } keeping labels within [top, bottom]
+// and at least `gap` px apart, while staying as close to their natural y as possible.
+function spreadLabels(items, gap = 16, top = -Infinity, bottom = Infinity) {
+  const arr = items.map(it => ({
+    ...it
+  })).sort((a, b) => a.y - b.y);
+  // push down where too close
+  for (let i = 1; i < arr.length; i++) {
+    if (arr[i].y - arr[i - 1].y < gap) arr[i].y = arr[i - 1].y + gap;
+  }
+  // clamp to bottom, then resolve upward so nothing spills past the frame
+  for (let i = arr.length - 1; i >= 0; i--) {
+    if (arr[i].y > bottom) arr[i].y = bottom;
+    if (i < arr.length - 1 && arr[i + 1].y - arr[i].y < gap) arr[i].y = arr[i + 1].y - gap;
+    if (arr[i].y < top) arr[i].y = top;
+  }
+  return Object.fromEntries(arr.map(it => [it.key, it.y]));
+}
+
+// Shared tooltip frame: wraps an SVG-returning render fn and shows an HTML tooltip.
+// points: array of {cx, cy, rows:[{label,value,color}], title} in SVG viewBox coords.
+function ChartFrame({
+  viewW,
+  viewH,
+  children,
+  points,
+  height
+}) {
+  const [hover, setHover] = useState(null);
+  const wrapRef = React.useRef(null);
+  const findNearest = e => {
+    const rect = wrapRef.current.getBoundingClientRect();
+    const sx = (e.clientX - rect.left) / rect.width * viewW;
+    const sy = (e.clientY - rect.top) / rect.height * viewH;
+    let best = null,
+      bd = Infinity;
+    for (const p of points) {
+      const d = Math.hypot(p.cx - sx, p.cy - sy);
+      if (d < bd) {
+        bd = d;
+        best = p;
+      }
+    }
+    // only trigger if reasonably close horizontally
+    if (best && Math.abs(best.cx - sx) < viewW / points.length) {
+      setHover({
+        p: best,
+        px: best.cx / viewW * rect.width,
+        py: best.cy / viewH * rect.height
+      });
+    } else setHover(null);
+  };
+  return /*#__PURE__*/React.createElement("div", {
+    ref: wrapRef,
+    style: {
+      position: "relative",
+      width: "100%"
+    },
+    onMouseMove: findNearest,
+    onMouseLeave: () => setHover(null)
+  }, /*#__PURE__*/React.createElement("svg", {
+    viewBox: `0 0 ${viewW} ${viewH}`,
+    width: "100%",
+    style: {
+      display: "block"
+    }
+  }, children, hover && /*#__PURE__*/React.createElement("g", {
+    pointerEvents: "none"
+  }, /*#__PURE__*/React.createElement("line", {
+    x1: hover.p.cx,
+    y1: 0,
+    x2: hover.p.cx,
+    y2: viewH,
+    stroke: C.line,
+    strokeWidth: "1"
+  }), hover.p.markers?.map((m, i) => /*#__PURE__*/React.createElement("circle", {
+    key: i,
+    cx: m.cx,
+    cy: m.cy,
+    r: "6",
+    fill: "#fff",
+    stroke: m.color,
+    strokeWidth: "2.5"
+  })))), hover && /*#__PURE__*/React.createElement("div", {
+    style: {
+      position: "absolute",
+      left: Math.min(Math.max(hover.px + 12, 4), (wrapRef.current?.clientWidth || 400) - 150),
+      top: Math.max(hover.py - 10, 4),
+      background: "rgba(26,29,33,0.96)",
+      color: "#fff",
+      borderRadius: 8,
+      padding: "8px 11px",
+      fontSize: 12.5,
+      lineHeight: 1.5,
+      pointerEvents: "none",
+      whiteSpace: "nowrap",
+      boxShadow: "0 4px 14px rgba(0,0,0,0.22)",
+      zIndex: 5
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontWeight: 700,
+      marginBottom: 3
+    }
+  }, hover.p.title), hover.p.rows.map((r, i) => /*#__PURE__*/React.createElement("div", {
+    key: i,
+    style: {
+      display: "flex",
+      alignItems: "center",
+      gap: 7
+    }
+  }, /*#__PURE__*/React.createElement("span", {
+    style: {
+      width: 8,
+      height: 8,
+      borderRadius: "50%",
+      background: r.color,
+      display: "inline-block"
+    }
+  }), /*#__PURE__*/React.createElement("span", {
+    style: {
+      color: "#c7ccd3"
+    }
+  }, r.label), /*#__PURE__*/React.createElement("span", {
+    style: {
+      marginLeft: "auto",
+      fontWeight: 700
+    }
+  }, r.value)))));
+}
+
+// Line chart with reco band + colored dots by status (hoverable, per-point labels)
+function PriceRecoChart({
+  dates,
+  values,
+  statuses,
+  reco,
+  band = 0.05,
+  junePrice
+}) {
+  const W = 1120,
+    H = 340,
+    ml = 52,
+    mr = 74,
+    mt = 30,
+    mb = 34;
+  const iw = W - ml - mr,
+    ih = H - mt - mb;
+  const allVals = [...values, reco * (1 + band), reco * (1 - band), ...(junePrice != null ? [junePrice] : [])];
+  const {
+    min,
+    max
+  } = useScale(allVals, 0.1);
+  const N = dates.length;
+  const cols = N + 1; // slot 0 = Jun avg
+  const slotW = iw / cols;
+  const xJune = ml + 0.5 * slotW;
+  const x = i => ml + (i + 1.5) * slotW; // Jul dates
+  const divX = ml + 1.0 * slotW;
+  const y = v => mt + ih - (v - min) / (max - min) * ih;
+  const path = values.map((v, i) => v == null ? null : `${i === 0 ? "M" : "L"}${x(i)},${y(v)}`).filter(Boolean).join(" ");
+  const bandTop = y(reco * (1 + band)),
+    bandBot = y(reco * (1 - band));
+  const ticks = [min, (min + max) / 2, max];
+  const dotColor = v => {
+    if (v == null) return C.gray;
+    if (v > reco * (1 + band)) return C.red;
+    if (v < reco * (1 - band)) return C.amber;
+    return C.green;
+  };
+  const points = [...(junePrice != null ? [{
+    cx: xJune,
+    cy: y(junePrice),
+    title: "Jun avg",
+    markers: [{
+      cx: xJune,
+      cy: y(junePrice),
+      color: C.gray
+    }],
+    rows: [{
+      label: "Price",
+      value: fmtSP1(junePrice),
+      color: C.gray
+    }, {
+      label: "baseline",
+      value: "pre-experiment",
+      color: C.faint
+    }]
+  }] : []), ...values.map((v, i) => v == null ? null : {
+    cx: x(i),
+    cy: y(v),
+    title: shortDate(dates[i]),
+    markers: [{
+      cx: x(i),
+      cy: y(v),
+      color: dotColor(v)
+    }],
+    rows: [{
+      label: "Price",
+      value: fmtSP1(v),
+      color: dotColor(v)
+    }, {
+      label: "vs reco",
+      value: fmtSP1(v - reco).replace("₹", v - reco >= 0 ? "+₹" : "₹"),
+      color: C.faint
+    }]
+  }).filter(Boolean)];
+  return /*#__PURE__*/React.createElement(ChartFrame, {
+    viewW: W,
+    viewH: H,
+    points: points
+  }, /*#__PURE__*/React.createElement("rect", {
+    x: divX,
+    y: bandTop,
+    width: W - mr - divX,
+    height: bandBot - bandTop,
+    fill: C.greenBg,
+    opacity: "0.6"
+  }), /*#__PURE__*/React.createElement("line", {
+    x1: divX,
+    y1: y(reco),
+    x2: W - mr,
+    y2: y(reco),
+    stroke: C.green,
+    strokeWidth: "2",
+    strokeDasharray: "6 5"
+  }), /*#__PURE__*/React.createElement("text", {
+    x: W - mr - 4,
+    y: y(reco) - 8,
+    textAnchor: "end",
+    fontSize: "15",
+    fill: C.green,
+    fontWeight: "600"
+  }, "reco ", fmtSP(reco), " ±5%"), ticks.map((t, i) => /*#__PURE__*/React.createElement("text", {
+    key: i,
+    x: ml - 8,
+    y: y(t) + 4,
+    textAnchor: "end",
+    fontSize: "13",
+    fill: C.faint
+  }, t.toFixed(0))), /*#__PURE__*/React.createElement("line", {
+    x1: divX,
+    y1: mt,
+    x2: divX,
+    y2: mt + ih,
+    stroke: C.line,
+    strokeWidth: "1.5"
+  }), /*#__PURE__*/React.createElement("text", {
+    x: divX + 5,
+    y: mt + 12,
+    fontSize: "12.5",
+    fill: C.faint,
+    fontWeight: "600"
+  }, "Jul 1"), junePrice != null && /*#__PURE__*/React.createElement("g", null, /*#__PURE__*/React.createElement("line", {
+    x1: xJune,
+    y1: y(junePrice),
+    x2: x(0),
+    y2: y(values[0]),
+    stroke: C.gray,
+    strokeWidth: "1.5",
+    strokeDasharray: "3 3",
+    opacity: "0.6"
+  }), /*#__PURE__*/React.createElement("circle", {
+    cx: xJune,
+    cy: y(junePrice),
+    r: "5",
+    fill: C.gray
+  }), /*#__PURE__*/React.createElement("text", {
+    x: xJune,
+    y: H - 10,
+    textAnchor: "middle",
+    fontSize: "11.5",
+    fill: C.faint
+  }, "Jun avg")), /*#__PURE__*/React.createElement("path", {
+    d: path,
+    fill: "none",
+    stroke: C.ink,
+    strokeWidth: "2"
+  }), values.map((v, i) => v == null ? null : /*#__PURE__*/React.createElement("circle", {
+    key: i,
+    cx: x(i),
+    cy: y(v),
+    r: "5.5",
+    fill: dotColor(v)
+  })), dates.map((d, i) => i % 3 === 0 || i === dates.length - 1 ? /*#__PURE__*/React.createElement("text", {
+    key: i,
+    x: x(i),
+    y: H - 10,
+    textAnchor: "middle",
+    fontSize: "12",
+    fill: C.faint
+  }, shortDate(d)) : null));
+}
+
+// Multi-line chart: shelf discount (solid) vs brand fund declared (dashed gray) vs planned target (dashed green)
+function ShelfVsFundChart({
+  dates,
+  shelf,
+  brand,
+  planned,
+  juneShelf,
+  juneBrand
+}) {
+  const W = 1120,
+    H = 360,
+    ml = 48,
+    mr = 150,
+    mt = 24,
+    mb = 34;
+  const iw = W - ml - mr,
+    ih = H - mt - mb;
+  // dynamic y-axis: fit every plotted value (shelf, brand, planned, June anchors) with headroom
+  const allVals = [...shelf, ...brand, planned, juneShelf, juneBrand].filter(v => v != null && !Number.isNaN(v));
+  const dataMax = allVals.length ? Math.max(...allVals) : 26;
+  const min = 0;
+  // round the top up to a "nice" number and leave ~8% headroom so labels/lines clear the frame
+  const niceCeil = v => {
+    const step = v <= 12 ? 2 : v <= 30 ? 5 : v <= 60 ? 10 : 20;
+    return Math.ceil(v / step) * step;
+  };
+  const max = Math.max(niceCeil(dataMax * 1.08), 6);
+  // slot 0 = Jun avg, slots 1..N = Jul dates. N+1 total columns.
+  const N = dates.length;
+  const cols = N + 1;
+  const x = slot => ml + slot / cols * iw; // leave a little room; slot 0 = june
+  const xJune = ml + 0.5 / cols * iw;
+  const xJul = i => ml + (i + 1.5) / cols * iw;
+  const y = v => mt + ih - (v - min) / (max - min) * ih;
+  const divX = ml + 1.0 / cols * iw; // between june slot and jul window
+  // dynamic gridline ticks: ~5-6 evenly spaced steps up to max
+  const tickStep = max <= 12 ? 2 : max <= 30 ? 5 : max <= 60 ? 10 : 20;
+  const ticks = [];
+  for (let t = 0; t <= max + 0.001; t += tickStep) ticks.push(t);
+  const shelfPath = shelf.map((v, i) => v == null ? null : `${i === 0 ? "M" : "L"}${xJul(i)},${y(v)}`).filter(Boolean).join(" ");
+  const brandPath = brand.map((v, i) => v == null ? null : `${i === 0 ? "M" : "L"}${xJul(i)},${y(v)}`).filter(Boolean).join(" ");
+  const lastShelf = shelf[shelf.length - 1],
+    lastBrand = brand[brand.length - 1];
+  // De-collide the three right-edge labels (planned / actual / brand) so they don't overlap
+  // when their values are numerically close. Keep each near its true y but enforce a min gap.
+  const labelY = spreadLabels([{
+    key: "planned",
+    y: y(planned) - 6
+  }, {
+    key: "actual",
+    y: y(lastShelf) + 5
+  }, {
+    key: "brand",
+    y: y(lastBrand) + 5
+  }], 17, mt + 8, mt + ih - 2);
+  const points = [{
+    cx: xJune,
+    cy: y(juneShelf),
+    title: "Jun avg",
+    markers: [{
+      cx: xJune,
+      cy: y(juneShelf),
+      color: C.gray
+    }, {
+      cx: xJune,
+      cy: y(juneBrand),
+      color: C.gray
+    }],
+    rows: [{
+      label: "Shelf discount",
+      value: fmtPct(juneShelf),
+      color: C.gray
+    }, {
+      label: "Brand fund",
+      value: fmtPct(juneBrand),
+      color: C.gray
+    }, {
+      label: "baseline",
+      value: "pre-experiment",
+      color: C.faint
+    }]
+  }, ...dates.map((d, i) => ({
+    cx: xJul(i),
+    cy: y(shelf[i]),
+    title: shortDate(d),
+    markers: [{
+      cx: xJul(i),
+      cy: y(shelf[i]),
+      color: C.ink
+    }, {
+      cx: xJul(i),
+      cy: y(brand[i]),
+      color: C.gray
+    }],
+    rows: [{
+      label: "Shelf discount",
+      value: fmtPct(shelf[i]),
+      color: C.ink
+    }, {
+      label: "Brand fund",
+      value: fmtPct(brand[i]),
+      color: C.gray
+    }, {
+      label: "Planned",
+      value: fmtPct(planned),
+      color: C.green
+    }]
+  }))];
+  return /*#__PURE__*/React.createElement(ChartFrame, {
+    viewW: W,
+    viewH: H,
+    points: points
+  }, ticks.map((t, i) => /*#__PURE__*/React.createElement("g", {
+    key: i
+  }, /*#__PURE__*/React.createElement("line", {
+    x1: ml,
+    y1: y(t),
+    x2: W - mr,
+    y2: y(t),
+    stroke: C.line,
+    strokeWidth: "1"
+  }), /*#__PURE__*/React.createElement("text", {
+    x: ml - 8,
+    y: y(t) + 4,
+    textAnchor: "end",
+    fontSize: "13",
+    fill: C.faint
+  }, t, "%"))), /*#__PURE__*/React.createElement("line", {
+    x1: divX,
+    y1: mt,
+    x2: divX,
+    y2: mt + ih,
+    stroke: C.line,
+    strokeWidth: "1.5"
+  }), /*#__PURE__*/React.createElement("text", {
+    x: divX + 5,
+    y: mt + 12,
+    fontSize: "12.5",
+    fill: C.faint,
+    fontWeight: "600"
+  }, "Jul 1"), /*#__PURE__*/React.createElement("line", {
+    x1: divX,
+    y1: y(planned),
+    x2: W - mr,
+    y2: y(planned),
+    stroke: C.green,
+    strokeWidth: "2.5",
+    strokeDasharray: "7 5"
+  }), /*#__PURE__*/React.createElement("text", {
+    x: W - 6,
+    y: labelY.planned,
+    textAnchor: "end",
+    fontSize: "14.5",
+    fill: C.green,
+    fontWeight: "700"
+  }, "planned ", planned, "%"), /*#__PURE__*/React.createElement("line", {
+    x1: xJune,
+    y1: y(juneShelf),
+    x2: xJul(0),
+    y2: y(shelf[0]),
+    stroke: C.gray,
+    strokeWidth: "2",
+    strokeDasharray: "3 3",
+    opacity: "0.7"
+  }), /*#__PURE__*/React.createElement("line", {
+    x1: xJune,
+    y1: y(juneBrand),
+    x2: xJul(0),
+    y2: y(brand[0]),
+    stroke: C.gray,
+    strokeWidth: "2",
+    strokeDasharray: "3 3",
+    opacity: "0.7"
+  }), /*#__PURE__*/React.createElement("circle", {
+    cx: xJune,
+    cy: y(juneShelf),
+    r: "4",
+    fill: C.gray
+  }), /*#__PURE__*/React.createElement("circle", {
+    cx: xJune,
+    cy: y(juneBrand),
+    r: "4",
+    fill: C.gray
+  }), /*#__PURE__*/React.createElement("path", {
+    d: brandPath,
+    fill: "none",
+    stroke: C.gray,
+    strokeWidth: "2",
+    strokeDasharray: "7 5"
+  }), /*#__PURE__*/React.createElement("path", {
+    d: shelfPath,
+    fill: "none",
+    stroke: C.ink,
+    strokeWidth: "2.5"
+  }), shelf.map((v, i) => /*#__PURE__*/React.createElement("circle", {
+    key: "s" + i,
+    cx: xJul(i),
+    cy: y(v),
+    r: "4",
+    fill: C.ink
+  })), brand.map((v, i) => /*#__PURE__*/React.createElement("circle", {
+    key: "b" + i,
+    cx: xJul(i),
+    cy: y(v),
+    r: "4",
+    fill: C.gray
+  })), /*#__PURE__*/React.createElement("text", {
+    x: W - 6,
+    y: labelY.actual,
+    textAnchor: "end",
+    fontSize: "14.5",
+    fill: C.ink,
+    fontWeight: "700"
+  }, "actual ", lastShelf, "%"), /*#__PURE__*/React.createElement("text", {
+    x: W - 6,
+    y: labelY.brand,
+    textAnchor: "end",
+    fontSize: "14",
+    fill: C.gray,
+    fontWeight: "600"
+  }, "brand ", lastBrand, "%"), /*#__PURE__*/React.createElement("text", {
+    x: xJune,
+    y: H - 8,
+    textAnchor: "middle",
+    fontSize: "11.5",
+    fill: C.faint
+  }, "Jun avg"), dates.map((d, i) => i % 3 === 0 || i === dates.length - 1 ? /*#__PURE__*/React.createElement("text", {
+    key: i,
+    x: xJul(i),
+    y: H - 8,
+    textAnchor: "middle",
+    fontSize: "12",
+    fill: C.faint
+  }, shortDate(d)) : null));
+}
+
+// Top-up / brand pass-through gap bars, with planned top-up dashed line
+function TopUpGapChart({
+  dates,
+  topups,
+  planned,
+  juneTopup
+}) {
+  const W = 1120,
+    H = 330,
+    ml = 44,
+    mr = 128,
+    mt = 44,
+    mb = 40;
+  const iw = W - ml - mr,
+    ih = H - mt - mb;
+  const allTop = juneTopup != null ? [...topups, juneTopup] : topups;
+  const maxV = Math.max(planned * 1.3, ...allTop.map(v => Math.abs(v))) * 1.1;
+  const minV = Math.min(-2, ...allTop);
+  const y = v => mt + ih - (v - minV) / (maxV - minV) * ih;
+  const y0 = y(0);
+  const N = dates.length;
+  const cols = N + 1; // slot 0 = Jun avg
+  const slotW = iw / cols;
+  const bw = slotW * 0.5;
+  const xJune = ml + 0.5 * slotW;
+  const xJul = i => ml + (i + 1.5) * slotW;
+  const divX = ml + 1.0 * slotW;
+  const points = [{
+    cx: xJune,
+    cy: y(Math.max(juneTopup, 0)) - 8,
+    title: "Jun avg",
+    markers: [],
+    rows: [{
+      label: "Blinkit top-up",
+      value: fmtPP(juneTopup),
+      color: C.gray
+    }, {
+      label: "baseline",
+      value: "pre-experiment",
+      color: C.faint
+    }]
+  }, ...dates.map((d, i) => ({
+    cx: xJul(i),
+    cy: y(Math.max(topups[i], 0)) - 8,
+    title: shortDate(d),
+    markers: [],
+    rows: [{
+      label: "Blinkit top-up",
+      value: fmtPP(topups[i]),
+      color: topups[i] < 0 ? C.red : C.amber
+    }, {
+      label: "Planned top-up",
+      value: fmtPP(planned),
+      color: C.amber
+    }, {
+      label: "Gap vs plan",
+      value: fmtPP(topups[i] - planned),
+      color: C.faint
+    }]
+  }))];
+  const drawBar = (v, cx, gray) => {
+    const col = gray ? C.gray : v < 0 ? C.red : C.amber;
+    const top = v >= 0 ? y(v) : y0;
+    const h = Math.abs(y(v) - y0);
+    return /*#__PURE__*/React.createElement("g", null, /*#__PURE__*/React.createElement("rect", {
+      x: cx - bw / 2,
+      y: top,
+      width: bw,
+      height: Math.max(h, 1),
+      rx: "2",
+      fill: col
+    }), /*#__PURE__*/React.createElement("text", {
+      x: cx,
+      y: v >= 0 ? top - 7 : top + h + 15,
+      textAnchor: "middle",
+      fontSize: "12",
+      fill: col,
+      fontWeight: "700"
+    }, fmtPP(v)));
+  };
+  return /*#__PURE__*/React.createElement(ChartFrame, {
+    viewW: W,
+    viewH: H,
+    points: points
+  }, /*#__PURE__*/React.createElement("text", {
+    x: ml - 8,
+    y: y(maxV) + 12,
+    textAnchor: "end",
+    fontSize: "13",
+    fill: C.faint
+  }, "+", maxV.toFixed(0), "pp"), /*#__PURE__*/React.createElement("text", {
+    x: ml - 8,
+    y: y0 + 4,
+    textAnchor: "end",
+    fontSize: "13",
+    fill: C.faint
+  }, "0"), minV < 0 && /*#__PURE__*/React.createElement("text", {
+    x: ml - 8,
+    y: y(minV) + 2,
+    textAnchor: "end",
+    fontSize: "13",
+    fill: C.faint
+  }, minV.toFixed(0), "pp"), /*#__PURE__*/React.createElement("line", {
+    x1: ml,
+    y1: y0,
+    x2: W - mr,
+    y2: y0,
+    stroke: C.line,
+    strokeWidth: "1.5"
+  }), /*#__PURE__*/React.createElement("line", {
+    x1: divX,
+    y1: mt,
+    x2: divX,
+    y2: mt + ih,
+    stroke: C.line,
+    strokeWidth: "1.5"
+  }), /*#__PURE__*/React.createElement("text", {
+    x: divX + 5,
+    y: mt + 4,
+    fontSize: "12.5",
+    fill: C.faint,
+    fontWeight: "600"
+  }, "Jul 1"), /*#__PURE__*/React.createElement("line", {
+    x1: divX,
+    y1: y(planned),
+    x2: W - mr,
+    y2: y(planned),
+    stroke: C.amber,
+    strokeWidth: "2",
+    strokeDasharray: "8 5"
+  }), /*#__PURE__*/React.createElement("text", {
+    x: W - mr + 6,
+    y: y(planned) - 6,
+    fontSize: "13",
+    fill: C.amber,
+    fontWeight: "700"
+  }, "planned top-up"), /*#__PURE__*/React.createElement("text", {
+    x: W - mr + 6,
+    y: y(planned) + 12,
+    fontSize: "13",
+    fill: C.amber,
+    fontWeight: "700"
+  }, fmtPP(planned)), juneTopup != null && drawBar(juneTopup, xJune, true), topups.map((v, i) => /*#__PURE__*/React.createElement("g", {
+    key: i
+  }, drawBar(v, xJul(i), false))), /*#__PURE__*/React.createElement("text", {
+    x: xJune,
+    y: H - 8,
+    textAnchor: "middle",
+    fontSize: "11",
+    fill: C.faint
+  }, "Jun"), dates.map((d, i) => i % 2 === 0 || i === dates.length - 1 ? /*#__PURE__*/React.createElement("text", {
+    key: i,
+    x: xJul(i),
+    y: H - 8,
+    textAnchor: "middle",
+    fontSize: "11",
+    fill: C.faint
+  }, shortDate(d).replace("Jul ", "")) : null));
+}
+
+// Delta bar chart (OSA drift vs baseline) — hoverable
+function DeltaBars({
+  dates,
+  deltas,
+  statuses,
+  threshold = -0.02,
+  unit = "pp",
+  scale = 100,
+  osaCur,
+  osaBase
+}) {
+  const W = 1120,
+    H = 300,
+    ml = 34,
+    mr = 28,
+    mt = 40,
+    mb = 46;
+  const iw = W - ml - mr,
+    ih = H - mt - mb;
+  const vals = deltas.map(d => d == null ? 0 : d * scale);
+  const maxAbs = Math.max(0.02 * scale, ...vals.map(v => Math.abs(v))) * 1.25;
+  const y0 = mt + ih / 2;
+  const bw = iw / dates.length * 0.55;
+  const y = v => y0 - v / maxAbs * (ih / 2);
+  const thr = threshold * scale;
+  const points = dates.map((d, i) => {
+    const cx = ml + (i + 0.5) * (iw / dates.length);
+    const v = (deltas[i] || 0) * scale;
+    return {
+      cx,
+      cy: y(Math.max(v, 0)) - 6,
+      title: shortDate(d),
+      markers: [],
+      rows: [{
+        label: "OSA",
+        value: fmtPct((osaCur ? osaCur[i] : 0) * 100),
+        color: v <= thr ? C.amber : C.green
+      }, {
+        label: "vs baseline",
+        value: fmtPP(v),
+        color: C.faint
+      }]
+    };
+  });
+  return /*#__PURE__*/React.createElement(ChartFrame, {
+    viewW: W,
+    viewH: H,
+    points: points
+  }, /*#__PURE__*/React.createElement("line", {
+    x1: ml,
+    y1: y0,
+    x2: W - mr,
+    y2: y0,
+    stroke: C.line,
+    strokeWidth: "1.5"
+  }), /*#__PURE__*/React.createElement("line", {
+    x1: ml,
+    y1: y(thr),
+    x2: W - mr,
+    y2: y(thr),
+    stroke: C.amber,
+    strokeWidth: "1.5",
+    strokeDasharray: "7 5"
+  }), /*#__PURE__*/React.createElement("text", {
+    x: W - mr,
+    y: y(thr) - 6,
+    textAnchor: "end",
+    fontSize: "13",
+    fill: C.amber,
+    fontWeight: "600"
+  }, thr.toFixed(0), unit, " gate threshold"), deltas.map((d, i) => {
+    if (d == null) return null;
+    const v = d * scale;
+    const col = v <= thr ? C.amber : C.green;
+    const cx = ml + (i + 0.5) * (iw / dates.length);
+    const top = v >= 0 ? y(v) : y0;
+    const h = Math.abs(y(v) - y0);
+    return /*#__PURE__*/React.createElement("g", {
+      key: i
+    }, /*#__PURE__*/React.createElement("rect", {
+      x: cx - bw / 2,
+      y: top,
+      width: bw,
+      height: Math.max(h, 1),
+      rx: "2",
+      fill: col
+    }), /*#__PURE__*/React.createElement("text", {
+      x: cx,
+      y: v >= 0 ? top - 6 : top + h + 15,
+      textAnchor: "middle",
+      fontSize: "12",
+      fill: col,
+      fontWeight: "700"
+    }, (v >= 0 ? "+" : "") + v.toFixed(1)));
+  }), dates.map((d, i) => i % 2 === 0 || i === dates.length - 1 ? /*#__PURE__*/React.createElement("text", {
+    key: i,
+    x: ml + (i + 0.5) * (iw / dates.length),
+    y: H - 8,
+    textAnchor: "middle",
+    fontSize: "11",
+    fill: C.faint
+  }, shortDate(d).replace("Jul ", "")) : null));
+}
+
+// Horizontal progress bar (% volume at reco)
+function RebarRow({
+  label,
+  pct
+}) {
+  const col = pct >= 90 ? C.green : pct >= 40 ? C.amber : pct > 0 ? C.amber : C.line;
+  const isRed = pct > 0 && pct < 5;
+  return /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      alignItems: "center",
+      gap: 14,
+      marginBottom: 9
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      width: 54,
+      fontSize: 14,
+      color: C.sub,
+      textAlign: "right",
+      fontVariantNumeric: "tabular-nums"
+    }
+  }, label), /*#__PURE__*/React.createElement("div", {
+    style: {
+      flex: 1,
+      height: 14,
+      background: "#eef0f2",
+      borderRadius: 7,
+      position: "relative"
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      width: Math.max(pct, isRed ? 1.5 : pct) + "%",
+      minWidth: pct > 0 ? 6 : 0,
+      height: "100%",
+      background: isRed ? C.red : col,
+      borderRadius: 7
+    }
+  })), /*#__PURE__*/React.createElement("div", {
+    style: {
+      width: 44,
+      fontSize: 14,
+      fontWeight: 600,
+      color: C.ink,
+      fontVariantNumeric: "tabular-nums"
+    }
+  }, pct.toFixed(0), "%"));
+}
+function ChartLegend({
+  items
+}) {
+  return /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      gap: 22,
+      flexWrap: "wrap",
+      marginTop: 8,
+      fontSize: 13,
+      color: C.sub
+    }
+  }, items.map((it, i) => /*#__PURE__*/React.createElement("div", {
+    key: i,
+    style: {
+      display: "flex",
+      alignItems: "center",
+      gap: 7
+    }
+  }, /*#__PURE__*/React.createElement("svg", {
+    width: "26",
+    height: "10"
+  }, /*#__PURE__*/React.createElement("line", {
+    x1: "0",
+    y1: "5",
+    x2: "26",
+    y2: "5",
+    stroke: it.color,
+    strokeWidth: "2.5",
+    strokeDasharray: it.dash ? "5 3" : "0"
+  })), /*#__PURE__*/React.createElement("span", null, it.label))));
+}
+
+// ---------- derived helpers per SKU ----------
+function skuLatest(sku) {
+  const s = DATA.series[sku.sku];
+  const n = s.date.length - 1;
+  return {
+    now_sp: s.sp_current[n],
+    sp_gap: s.sp_gap[n],
+    osa: s.osa_current[n],
+    osa_delta: s.osa_delta[n],
+    disc_current: s.disc_current[n],
+    disc_reco: s.disc_reco,
+    units: s.units[n],
+    units_delta: s.units_delta[n],
+    value_today: s.value_today[n],
+    value_june: s.value_june_avg,
+    sp_status: s.sp_status[n],
+    osa_status: s.osa_status[n],
+    sales_status: s.sales_status[n],
+    comp_now: s.comp_current[n],
+    n,
+    s
+  };
+}
+function cumValue(sku, upto) {
+  const s = DATA.series[sku];
+  let c = 0;
+  const lim = upto == null ? s.value_today.length : upto + 1;
+  for (let i = 0; i < lim; i++) if (s.value_today[i] != null) c += s.value_today[i];
+  return c;
+}
+// observed top-up = shelf discount - brand fund (declared)
+function topUp(sku) {
+  const L = skuLatest(sku);
+  return L.disc_current - (sku.reco_bf || 0);
+}
+
+// ---------- SKU summary card (overall grid) ----------
+function SkuCard({
+  sku,
+  onOpen
+}) {
+  const L = skuLatest(sku);
+  const isPull = sku.move === "Pull";
+  // status pill logic
+  const offPrice = isPull ? L.now_sp < sku.reco_sp * 0.95 : L.now_sp > sku.reco_sp * 1.05;
+  const drifting = Math.abs(L.now_sp - sku.reco_sp) > sku.reco_sp * 0.05;
+  let pillTone = "good",
+    pillText = "at reco";
+  if (offPrice) {
+    pillTone = "bad";
+    pillText = "off price";
+  } else if (drifting) {
+    pillTone = "warn";
+    pillText = "price drifting";
+  }
+  const salesDelta = L.value_june ? (L.value_today - L.value_june) / L.value_june * 100 : null;
+  const salesAbs = L.value_today != null && L.value_june != null ? L.value_today - L.value_june : null;
+  const flagged = tone(L.sales_status) === "bad" || tone(L.osa_status) === "bad";
+  const tu = topUp(sku);
+  const nameShort = sku.bgr;
+  const priceColor = v => v == null ? C.ink : v > sku.reco_sp * 1.05 ? C.red : v < sku.reco_sp * 0.95 ? C.amber : C.green;
+  return /*#__PURE__*/React.createElement(Card, {
+    style: {
+      padding: 20
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      justifyContent: "space-between",
+      alignItems: "flex-start"
+    }
+  }, /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 20,
+      fontWeight: 700,
+      color: C.ink
+    }
+  }, nameShort), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 14,
+      color: C.sub,
+      marginTop: 3
+    }
+  }, offPrice ? `off price - top-up ${fmtPP(tu)} vs plan` : drifting ? "partial city adoption" : "at reco")), /*#__PURE__*/React.createElement(Pill, {
+    t: pillTone
+  }, pillText)), /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      alignItems: "flex-end",
+      gap: 20,
+      marginTop: 18
+    }
+  }, /*#__PURE__*/React.createElement(PriceStep, {
+    label: "JUNE",
+    value: fmtSP(sku.june_sp),
+    color: C.ink
+  }), /*#__PURE__*/React.createElement(Arrow, null), /*#__PURE__*/React.createElement(PriceStep, {
+    label: "NOW",
+    value: fmtSP(L.now_sp),
+    color: priceColor(L.now_sp),
+    bold: true
+  }), /*#__PURE__*/React.createElement("div", {
+    style: {
+      borderLeft: `1px solid ${C.line}`,
+      height: 40,
+      alignSelf: "center"
+    }
+  }), /*#__PURE__*/React.createElement(PriceStep, {
+    label: "RECO",
+    value: fmtSP(sku.reco_sp),
+    color: C.ink,
+    bold: true
+  })), /*#__PURE__*/React.createElement("div", {
+    style: {
+      borderTop: `1px solid ${C.line}`,
+      margin: "18px 0"
+    }
+  }), /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      alignItems: "center",
+      gap: 8,
+      flexWrap: "wrap"
+    }
+  }, /*#__PURE__*/React.createElement(Metric, {
+    label: "SALES, JUNE AVG/DAY",
+    value: fmtINR(L.value_june)
+  }), /*#__PURE__*/React.createElement(Arrow, null), /*#__PURE__*/React.createElement(Metric, {
+    label: "SALES TODAY",
+    value: fmtINR(L.value_today)
+  }), /*#__PURE__*/React.createElement("div", {
+    style: {
+      flex: 1
+    }
+  }), /*#__PURE__*/React.createElement("div", {
+    style: {
+      textAlign: "right"
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 12,
+      color: C.sub,
+      textTransform: "uppercase",
+      letterSpacing: 0.4
+    }
+  }, "CHANGE"), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 20,
+      fontWeight: 700,
+      color: salesDelta >= 0 ? C.green : C.red
+    }
+  }, salesAbs >= 0 ? "+" : "", fmtINR(salesAbs), " (", salesDelta >= 0 ? "+" : "", salesDelta?.toFixed(0), "%)"), flagged && /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 12,
+      color: C.amber,
+      fontWeight: 600,
+      marginTop: 2
+    }
+  }, "⚑ ", tone(L.osa_status) === "bad" ? "stock breach" : "flagged", " - not citable"))), /*#__PURE__*/React.createElement("div", {
+    style: {
+      borderTop: `1px solid ${C.line}`,
+      margin: "18px 0"
+    }
+  }), /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      gap: 40
+    }
+  }, /*#__PURE__*/React.createElement(Metric, {
+    label: "BRAND FUND",
+    value: fmtPct(sku.reco_bf),
+    sub: "held at reco"
+  }), /*#__PURE__*/React.createElement(Metric, {
+    label: "SHELF DISCOUNT",
+    value: fmtPct(L.disc_current)
+  }), /*#__PURE__*/React.createElement(Metric, {
+    label: "OBSERVED TOP-UP",
+    value: fmtPP(tu),
+    valueColor: tu >= (sku.reco_discount - sku.reco_bf) * 0.8 ? C.green : C.amber
+  })), /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      justifyContent: "space-between",
+      alignItems: "center",
+      marginTop: 16
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 13,
+      color: C.faint
+    }
+  }, "PID ", sku.product_id), /*#__PURE__*/React.createElement("button", {
+    onClick: () => onOpen(sku.sku),
+    style: {
+      background: "none",
+      border: "none",
+      color: C.ink,
+      fontSize: 15,
+      fontWeight: 600,
+      cursor: "pointer",
+      padding: 0
+    }
+  }, "open story →")));
+}
+function PriceStep({
+  label,
+  value,
+  color,
+  bold
+}) {
+  return /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 12,
+      color: C.faint,
+      textTransform: "uppercase",
+      letterSpacing: 0.4
+    }
+  }, label), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 30,
+      fontWeight: bold ? 800 : 600,
+      color,
+      lineHeight: 1.1
+    }
+  }, value));
+}
+function Arrow() {
+  return /*#__PURE__*/React.createElement("span", {
+    style: {
+      color: C.faint,
+      fontSize: 22,
+      alignSelf: "center"
+    }
+  }, "→");
+}
+function Metric({
+  label,
+  value,
+  sub,
+  valueColor
+}) {
+  return /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 12,
+      color: C.sub,
+      textTransform: "uppercase",
+      letterSpacing: 0.4
+    }
+  }, label), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 20,
+      fontWeight: 700,
+      color: valueColor || C.ink,
+      marginTop: 2
+    }
+  }, value), sub && /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 12,
+      color: C.faint,
+      marginTop: 1
+    }
+  }, sub));
+}
+
+// ---------- Overall view ----------
+function OverallView({
+  onOpen
+}) {
+  const skus = DATA.skus;
+  const pushes = skus.filter(s => s.move === "Push");
+  const pulls = skus.filter(s => s.move === "Pull");
+
+  // build status bullets from data
+  const bullets = [];
+  const offPull = pulls.filter(s => skuLatest(s).now_sp > s.reco_sp * 1.05 || s.move === "Pull" && Math.abs(skuLatest(s).now_sp - s.reco_sp) > s.reco_sp * 0.05);
+  const pushDrift = pushes.filter(s => Math.abs(skuLatest(s).now_sp - s.reco_sp) > s.reco_sp * 0.05);
+  if (pushDrift.length) bullets.push({
+    t: "warn",
+    text: `${pushDrift.map(s => s.bgr).join(", ")}: mixed price adoption within the pushes.`
+  });
+  const offP = pulls.filter(s => skuLatest(s).now_sp > s.reco_sp * 1.05 || skuLatest(s).now_sp < s.reco_sp * 0.95);
+  if (offP.length) bullets.push({
+    t: "bad",
+    text: `Both pulls (${pulls.map(s => s.bgr).join(", ")}) are off shelf price - the price raise is not live on most tracked volume.`
+  });
+  pulls.forEach(s => {
+    const tu = topUp(s);
+    if (tone(skuLatest(s).sp_status) !== "good") bullets.push({
+      t: "bad",
+      text: `${s.bgr}: Blinkit top-up (${fmtPP(tu)}) is running against the price raise - ask them not to backfill the withdrawn fund.`
+    });
+  });
+  bullets.push({
+    t: "warn",
+    text: "A brand-fund move lands only if Blinkit keeps its own top-up steady - align with Blinkit before any change."
+  });
+  // clean read: pushes with OK sales
+  const cleanSkus = pushes.filter(s => tone(skuLatest(s).sales_status) === "good" && tone(skuLatest(s).osa_status) === "good");
+  if (cleanSkus.length) {
+    const mtd = cleanSkus.reduce((a, s) => a + cumValue(s.sku), 0);
+    bullets.push({
+      t: "good",
+      text: `Only clean read so far: ${cleanSkus.map(s => s.bgr).join(", ")}, MTD ${fmtINR(mtd)} tracked (baseline unverified - do not cite externally).`
+    });
+  }
+  skus.forEach(s => {
+    if (tone(skuLatest(s).osa_status) === "bad") bullets.push({
+      t: "neutral",
+      text: `${s.bgr}: stock breach (OSA drift flagged) - sales shown with a flag, not citable.`
+    });
+  });
+
+  // action queue: any flagged OSA
+  const actions = skus.filter(s => tone(skuLatest(s).osa_status) === "bad").map(s => ({
+    sku: s.sku,
+    panel: "panel-osa",
+    title: `${s.bgr} - stock drift confounds the sales read`,
+    note: `OSA flagged on latest snapshot; ${fmtPP(skuLatest(s).osa_delta)} vs baseline.`,
+    tag: "flag read internally"
+  }));
+  const openActions = actions.length;
+  return /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement(Card, {
+    style: {
+      marginBottom: 20
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      justifyContent: "space-between",
+      alignItems: "flex-start"
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      alignItems: "center",
+      gap: 12
+    }
+  }, /*#__PURE__*/React.createElement(Dot, {
+    t: offP.length ? "bad" : "good"
+  }), /*#__PURE__*/React.createElement("span", {
+    style: {
+      fontSize: 24,
+      fontWeight: 800,
+      color: C.ink
+    }
+  }, offP.length ? "At risk - both pulls off price" : "On track"), /*#__PURE__*/React.createElement(Pill, {
+    t: "warn"
+  }, "baseline unverified - control pending")), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 15,
+      fontWeight: 600,
+      color: C.sub,
+      fontFamily: "ui-monospace, monospace"
+    }
+  }, openActions, " open action", openActions === 1 ? "" : "s")), /*#__PURE__*/React.createElement("div", {
+    style: {
+      marginTop: 18,
+      display: "flex",
+      flexDirection: "column",
+      gap: 11
+    }
+  }, bullets.map((b, i) => /*#__PURE__*/React.createElement("div", {
+    key: i,
+    style: {
+      display: "flex",
+      gap: 11,
+      alignItems: "flex-start"
+    }
+  }, /*#__PURE__*/React.createElement(Dot, {
+    t: b.t
+  }), /*#__PURE__*/React.createElement("span", {
+    style: {
+      fontSize: 15,
+      color: C.ink,
+      lineHeight: 1.5
+    }
+  }, b.text))))), actions.length > 0 && /*#__PURE__*/React.createElement(Card, {
+    style: {
+      marginBottom: 24
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      justifyContent: "space-between"
+    }
+  }, /*#__PURE__*/React.createElement("span", {
+    style: {
+      fontSize: 20,
+      fontWeight: 700
+    }
+  }, "Action Queue"), /*#__PURE__*/React.createElement("span", {
+    style: {
+      fontSize: 15,
+      color: C.sub
+    }
+  }, openActions, " open")), actions.map((a, i) => /*#__PURE__*/React.createElement("div", {
+    key: i,
+    onClick: () => onOpen(a.sku, a.panel),
+    style: {
+      display: "flex",
+      gap: 11,
+      marginTop: 16,
+      alignItems: "flex-start",
+      cursor: "pointer",
+      borderRadius: 8,
+      padding: 8,
+      margin: "8px -8px 0",
+      transition: "background 0.12s"
+    },
+    onMouseEnter: e => e.currentTarget.style.background = "#f4f5f6",
+    onMouseLeave: e => e.currentTarget.style.background = "transparent"
+  }, /*#__PURE__*/React.createElement(Dot, {
+    t: "warn"
+  }), /*#__PURE__*/React.createElement("div", {
+    style: {
+      flex: 1
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      justifyContent: "space-between",
+      alignItems: "baseline"
+    }
+  }, /*#__PURE__*/React.createElement("span", {
+    style: {
+      fontSize: 16,
+      fontWeight: 700,
+      color: C.ink
+    }
+  }, a.title, " ", /*#__PURE__*/React.createElement("span", {
+    style: {
+      color: C.faint,
+      fontWeight: 500
+    }
+  }, "→")), /*#__PURE__*/React.createElement("span", {
+    style: {
+      fontSize: 14,
+      fontWeight: 700
+    }
+  }, a.tag)), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 14,
+      color: C.sub,
+      marginTop: 3
+    }
+  }, a.note))))), /*#__PURE__*/React.createElement(Eyebrow, {
+    right: `${pushes.filter(s => Math.abs(skuLatest(s).now_sp - s.reco_sp) <= s.reco_sp * 0.05).length} OF ${pushes.length} PRICE LANDED`
+  }, "Push · Price Cut"), /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "grid",
+      gridTemplateColumns: "1fr 1fr",
+      gap: 20,
+      marginBottom: 28
+    }
+  }, pushes.map(s => /*#__PURE__*/React.createElement(SkuCard, {
+    key: s.sku,
+    sku: s,
+    onOpen: onOpen
+  }))), /*#__PURE__*/React.createElement(Eyebrow, {
+    right: `${pulls.filter(s => skuLatest(s).now_sp > s.reco_sp * 1.05 || skuLatest(s).now_sp < s.reco_sp * 0.95).length} OF ${pulls.length} OFF PRICE`
+  }, "Pull · Price Raise"), /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "grid",
+      gridTemplateColumns: "1fr 1fr",
+      gap: 20
+    }
+  }, pulls.map(s => /*#__PURE__*/React.createElement(SkuCard, {
+    key: s.sku,
+    sku: s,
+    onOpen: onOpen
+  }))));
+}
+
+// ---------- Deep dive view ----------
+function MetricTile({
+  label,
+  value,
+  sub,
+  tone: tn
+}) {
+  return /*#__PURE__*/React.createElement("div", {
+    style: {
+      flex: 1,
+      border: `1px solid ${C.line}`,
+      borderTop: `3px solid ${toneColor[tn] || C.line}`,
+      borderRadius: 8,
+      padding: "14px 16px",
+      minWidth: 0
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 13,
+      color: C.sub,
+      fontWeight: 600
+    }
+  }, label), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 30,
+      fontWeight: 800,
+      color: toneColor[tn] || C.ink,
+      margin: "4px 0"
+    }
+  }, value), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 12,
+      color: C.faint,
+      lineHeight: 1.3
+    }
+  }, sub));
+}
+function DeepDive({
+  sku,
+  scrollTarget
+}) {
+  React.useEffect(() => {
+    if (scrollTarget) {
+      const t = setTimeout(() => {
+        const el = document.getElementById(scrollTarget);
+        if (el) el.scrollIntoView({
+          behavior: "smooth",
+          block: "start"
+        });else window.scrollTo(0, 0);
+      }, 120);
+      return () => clearTimeout(t);
+    } else {
+      window.scrollTo(0, 0);
+    }
+  }, [sku, scrollTarget]);
+  const meta = DATA.skus.find(s => s.sku === sku);
+  const s = DATA.series[sku];
+  const dates = DATA.dates;
+  const L = skuLatest(meta);
+  const isPull = meta.move === "Pull";
+
+  // panel 1: fund reach
+  const plannedShelf = meta.reco_discount; // reco discount %
+  const actualShelf = L.disc_current;
+  const shortfall = actualShelf - plannedShelf;
+  const brandFund = meta.reco_bf;
+  const plannedHold = meta.reco_discount - meta.reco_bf; // planned blinkit hold
+  const actualTopUp = actualShelf - brandFund;
+  const topUpGap = plannedHold - actualTopUp;
+
+  // read bullets for panel
+  const readBullets = [];
+  const onShelfPct = DATA.vol_at_reco[sku] ? DATA.vol_at_reco[sku][L.n] : null;
+  readBullets.push({
+    t: onShelfPct != null && onShelfPct < 50 ? "bad" : "good",
+    text: `The price raise ${onShelfPct != null && onShelfPct < 50 ? "is not fully on shelf" : "is largely on shelf"} - ${onShelfPct?.toFixed(0)}% of tracked volume at reco on ${shortDate(dates[L.n])}.`
+  });
+  if (topUpGap > 1) readBullets.push({
+    t: "bad",
+    text: `Blinkit is adding its own discount (${fmtPP(actualTopUp)}) against the price raise - ask them not to backfill the withdrawn fund.`
+  });
+  readBullets.push({
+    t: "neutral",
+    text: tone(L.osa_status) === "bad" ? "Pace not citable while stock is off plan - fix compliance first." : "Pace citable on clean days only."
+  });
+  return /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      justifyContent: "space-between",
+      alignItems: "flex-start",
+      marginBottom: 6
+    }
+  }, /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 22,
+      fontWeight: 800
+    }
+  }, meta.sku, " · ", meta.move.toLowerCase(), " · reco SP ", fmtSP(meta.reco_sp)), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 15,
+      color: C.sub,
+      marginTop: 3
+    }
+  }, topUpGap > 1 ? `off price - Blinkit top-up below plan (${fmtPP(actualTopUp)} observed vs ${fmtPP(plannedHold)} planned)` : "tracking to plan")), /*#__PURE__*/React.createElement("span", {
+    style: {
+      fontSize: 13,
+      color: C.sub,
+      background: "#eef0f2",
+      borderRadius: 6,
+      padding: "6px 12px",
+      whiteSpace: "nowrap"
+    }
+  }, "data through ", shortDate(dates[dates.length - 1]))), /*#__PURE__*/React.createElement(Card, {
+    style: {
+      margin: "16px 0",
+      background: "#fafbfb"
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 15,
+      fontWeight: 700,
+      marginBottom: 10
+    }
+  }, "Read"), /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      flexDirection: "column",
+      gap: 9
+    }
+  }, readBullets.map((b, i) => /*#__PURE__*/React.createElement("div", {
+    key: i,
+    style: {
+      display: "flex",
+      gap: 11,
+      alignItems: "flex-start"
+    }
+  }, /*#__PURE__*/React.createElement(Dot, {
+    t: b.t
+  }), /*#__PURE__*/React.createElement("span", {
+    style: {
+      fontSize: 15,
+      color: C.ink,
+      lineHeight: 1.5
+    }
+  }, b.text))))), /*#__PURE__*/React.createElement(Card, {
+    style: {
+      marginBottom: 20
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 17,
+      fontWeight: 700
+    }
+  }, "1 · Did the Jul 1 fund change reach shelf price?"), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 14,
+      color: C.sub,
+      margin: "3px 0 16px"
+    }
+  }, "Three-part read: plan → what actually happened → why."), /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      gap: 12,
+      flexWrap: "wrap"
+    }
+  }, /*#__PURE__*/React.createElement(MetricTile, {
+    tone: "good",
+    label: "Planned shelf discount",
+    value: fmtPct(plannedShelf),
+    sub: `${brandFund}% brand + ${plannedHold.toFixed(1)}pp Blinkit hold`
+  }), /*#__PURE__*/React.createElement(MetricTile, {
+    tone: "bad",
+    label: `Actual shelf · ${shortDate(dates[L.n])}`,
+    value: fmtPct(actualShelf),
+    sub: `${brandFund}% brand visible + ${actualTopUp.toFixed(1)}pp Blinkit top-up`
+  }), /*#__PURE__*/React.createElement(MetricTile, {
+    tone: "bad",
+    label: "Shelf shortfall vs plan",
+    value: fmtPP(shortfall),
+    sub: "target shelf minus actual shelf"
+  }), /*#__PURE__*/React.createElement(MetricTile, {
+    tone: "neutral",
+    label: "Brand pass-through gap",
+    value: fmtPP(0),
+    sub: "declared brand fund visible on shelf"
+  }), /*#__PURE__*/React.createElement(MetricTile, {
+    tone: "warn",
+    label: "Blinkit top-up gap",
+    value: fmtPP(topUpGap),
+    sub: "planned hold minus actual top-up"
+  })), /*#__PURE__*/React.createElement("div", {
+    style: {
+      borderLeft: `3px solid ${C.red}`,
+      background: "#fafbfb",
+      padding: "12px 16px",
+      marginTop: 16,
+      fontSize: 15
+    }
+  }, /*#__PURE__*/React.createElement("b", null, "Read:"), " Brand fund is visible, but Blinkit top-up is ", fmtPP(topUpGap), " off the planned hold."), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 15,
+      fontWeight: 700,
+      margin: "22px 0 4px"
+    }
+  }, "Brand fund check: June baseline ~", meta.june_bf, "% withdrawn to reco ", brandFund, "% from Jul 1, then held."), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 16,
+      fontWeight: 700,
+      margin: "18px 0 6px"
+    }
+  }, "Total shelf discount vs brand fund"), panelOK("shelf") && hasData(s.disc_current) ? /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement(ShelfVsFundChart, {
+    dates: dates,
+    shelf: s.disc_current,
+    brand: s.bf_live,
+    planned: plannedShelf,
+    juneShelf: meta.june_discount,
+    juneBrand: meta.june_bf
+  }), /*#__PURE__*/React.createElement(ChartLegend, {
+    items: [{
+      label: "Shelf discount",
+      color: C.ink,
+      dash: false
+    }, {
+      label: "Brand fund declared",
+      color: C.gray,
+      dash: true
+    }, {
+      label: "Planned shelf target",
+      color: C.green,
+      dash: true
+    }]
+  })) : /*#__PURE__*/React.createElement(NoData, {
+    label: "national__01b_final_sp.csv"
+  }), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 16,
+      fontWeight: 700,
+      margin: "22px 0 6px"
+    }
+  }, "Blinkit top-up / brand pass-through gap"), panelOK("shelf") && hasData(s.disc_current) ? /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement(TopUpGapChart, {
+    dates: dates,
+    topups: s.disc_current.map(d => d - brandFund),
+    planned: plannedHold,
+    juneTopup: meta.june_discount != null && meta.june_bf != null ? +(meta.june_discount - meta.june_bf).toFixed(1) : null
+  }), /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      gap: 24,
+      flexWrap: "wrap",
+      marginTop: 10
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      alignItems: "center",
+      gap: 8,
+      fontSize: 13,
+      color: C.sub
+    }
+  }, /*#__PURE__*/React.createElement("span", {
+    style: {
+      width: 13,
+      height: 13,
+      borderRadius: 3,
+      background: C.amber,
+      display: "inline-block"
+    }
+  }), "Above zero = Blinkit top-up visible on shelf"), /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      alignItems: "center",
+      gap: 8,
+      fontSize: 13,
+      color: C.sub
+    }
+  }, /*#__PURE__*/React.createElement("span", {
+    style: {
+      width: 13,
+      height: 13,
+      borderRadius: 3,
+      background: C.red,
+      display: "inline-block"
+    }
+  }), "Below zero = declared brand fund not fully visible")), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 13,
+      color: C.sub,
+      marginTop: 8
+    }
+  }, "Bars = shelf discount minus declared brand fund (the top-up Blinkit adds). Dashed line = planned hold ", fmtPP(plannedHold), ". Red bars mean shelf discount is below the declared brand fund.")) : /*#__PURE__*/React.createElement(NoData, {
+    label: "national__01b_final_sp.csv"
+  })), /*#__PURE__*/React.createElement(Card, {
+    style: {
+      marginBottom: 20
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 17,
+      fontWeight: 700,
+      marginBottom: 8
+    }
+  }, "2 · Price vs Reco"), panelOK("price") && hasData(s.sp_current) ? /*#__PURE__*/React.createElement(PriceRecoChart, {
+    dates: dates,
+    values: s.sp_current,
+    statuses: s.sp_status,
+    reco: meta.reco_sp,
+    junePrice: meta.june_sp
+  }) : /*#__PURE__*/React.createElement(NoData, {
+    label: "national__01b_final_sp.csv"
+  })), /*#__PURE__*/React.createElement(SalesPanel, {
+    sku: sku
+  }), /*#__PURE__*/React.createElement(Card, {
+    id: "panel-osa",
+    style: {
+      marginBottom: 20,
+      boxShadow: scrollTarget === "panel-osa" ? `0 0 0 2px ${C.amber}` : "none",
+      transition: "box-shadow 0.3s"
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 17,
+      fontWeight: 700
+    }
+  }, "4 · Stock (OSA)"), panelOK("osa") && hasData(s.osa_delta) ? /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 14,
+      color: C.sub,
+      margin: "3px 0 12px"
+    }
+  }, "bars = daily change vs June baseline OSA (pp) · line below = actual weighted OSA that day · 3+ consecutive days at or below −2pp flags the sales read"), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 17,
+      fontWeight: 700,
+      marginBottom: 6
+    }
+  }, "June baseline OSA: ", fmtPct(s.osa_baseline * 100)), /*#__PURE__*/React.createElement(DeltaBars, {
+    dates: dates,
+    deltas: s.osa_delta,
+    statuses: s.osa_status,
+    threshold: -0.02,
+    unit: "pp",
+    scale: 100,
+    osaCur: s.osa_current,
+    osaBase: s.osa_baseline
+  }), /*#__PURE__*/React.createElement(OsaTable, {
+    s: s,
+    dates: dates
+  })) : /*#__PURE__*/React.createElement("div", {
+    style: {
+      marginTop: 12
+    }
+  }, /*#__PURE__*/React.createElement(NoData, {
+    label: "national__02_osa_drift.csv"
+  }))), /*#__PURE__*/React.createElement(VolAtRecoPanel, {
+    sku: sku
+  }));
+}
+function OsaTable({
+  s,
+  dates
+}) {
+  return /*#__PURE__*/React.createElement("div", {
+    style: {
+      overflowX: "auto",
+      marginTop: 8
+    }
+  }, /*#__PURE__*/React.createElement("table", {
+    style: {
+      borderCollapse: "collapse",
+      width: "100%",
+      fontSize: 13
+    }
+  }, /*#__PURE__*/React.createElement("tbody", null, /*#__PURE__*/React.createElement("tr", null, /*#__PURE__*/React.createElement("td", {
+    style: {
+      color: C.sub,
+      fontWeight: 600,
+      padding: "4px 8px"
+    }
+  }, "date"), dates.map((d, i) => /*#__PURE__*/React.createElement("td", {
+    key: i,
+    style: {
+      textAlign: "center",
+      color: C.sub,
+      padding: "4px 8px",
+      whiteSpace: "nowrap"
+    }
+  }, shortDate(d).replace("Jul ", "")))), /*#__PURE__*/React.createElement("tr", null, /*#__PURE__*/React.createElement("td", {
+    style: {
+      color: C.sub,
+      fontWeight: 600,
+      padding: "4px 8px"
+    }
+  }, "osa"), s.osa_current.map((v, i) => /*#__PURE__*/React.createElement("td", {
+    key: i,
+    style: {
+      textAlign: "center",
+      padding: "4px 8px",
+      fontWeight: 600,
+      color: s.osa_delta[i] != null && s.osa_delta[i] * 100 <= -2 ? C.amber : C.green
+    }
+  }, (v * 100).toFixed(1)))))));
+}
+
+// Compact signed rupee for daily lift labels: +₹22k, -₹856, +₹1.2L
+function fmtLiftShort(n) {
+  if (n == null) return "—";
+  const sign = n >= 0 ? "+" : "-";
+  const a = Math.abs(n);
+  if (a >= 100000) return `${sign}₹${(a / 100000).toFixed(1).replace(/\.0$/, "")}L`;
+  if (a >= 1000) return `${sign}₹${Math.round(a / 1000)}k`;
+  return `${sign}₹${Math.round(a)}`;
+}
+
+// Daily paired bars: last month (light) vs this month (dark), with expected tick + lift label.
+function DailySalesChart({
+  dates,
+  thisMonth,
+  lastMonth,
+  expected,
+  flaggedDay
+}) {
+  const W = 1120,
+    H = 300,
+    ml = 56,
+    mr = 16,
+    mt = 40,
+    mb = 34;
+  const iw = W - ml - mr,
+    ih = H - mt - mb;
+  const N = dates.length;
+  const vals = [];
+  for (let i = 0; i < N; i++) {
+    if (thisMonth[i] != null) vals.push(thisMonth[i]);
+    if (lastMonth[i] != null) vals.push(lastMonth[i]);
+    if (expected[i] != null) vals.push(expected[i]);
+  }
+  const maxV = (vals.length ? Math.max(...vals) : 1) * 1.16; // headroom for lift labels
+  const y = v => mt + ih - v / maxV * ih;
+  const y0 = mt + ih;
+  const slot = iw / N;
+  // Group the two bars of a day tightly, and leave a clearly larger gap between days.
+  const dayGap = slot * 0.34; // empty space between one day's pair and the next
+  const pairGap = slot * 0.04; // small gap between the two bars within a day
+  const bw = (slot - dayGap - pairGap) / 2; // each bar width
+  const slotCenter = i => ml + (i + 0.5) * slot;
+  const xLast = i => slotCenter(i) - pairGap / 2 - bw; // light bar (left)
+  const xThis = i => slotCenter(i) + pairGap / 2; // dark bar (right)
+  // y-axis ticks (nice round rupee values)
+  const niceTicks = mx => {
+    const raw = mx / 3;
+    const mag = Math.pow(10, Math.floor(Math.log10(raw)));
+    const step = [1, 2, 2.5, 5, 10].map(m => m * mag).find(s => mx / s <= 4) || mag;
+    const out = [];
+    for (let t = 0; t <= mx * 0.92; t += step) out.push(t);
+    return out;
+  };
+  const ticks = niceTicks(maxV);
+  const points = dates.map((d, i) => {
+    const flg = flaggedDay(i);
+    const lift = (thisMonth[i] ?? 0) - (expected[i] ?? 0);
+    return {
+      cx: slotCenter(i),
+      cy: y(Math.max(thisMonth[i] ?? 0, lastMonth[i] ?? 0)) - 10,
+      title: shortDate(d),
+      markers: [],
+      rows: [{
+        label: "this month",
+        value: fmtINR(thisMonth[i]),
+        color: C.ink
+      }, {
+        label: "same weekday last month",
+        value: fmtINR(lastMonth[i]),
+        color: C.gray
+      }, {
+        label: "expected",
+        value: fmtINR(expected[i]),
+        color: C.green
+      }, {
+        label: "lift",
+        value: fmtLiftShort(lift),
+        color: lift >= 0 ? C.green : C.red
+      }, ...(flg ? [{
+        label: "flagged",
+        value: "not citable",
+        color: C.amber
+      }] : [])]
+    };
+  });
+  return /*#__PURE__*/React.createElement(ChartFrame, {
+    viewW: W,
+    viewH: H,
+    points: points
+  }, ticks.map((t, i) => /*#__PURE__*/React.createElement("g", {
+    key: i
+  }, /*#__PURE__*/React.createElement("line", {
+    x1: ml,
+    y1: y(t),
+    x2: W - mr,
+    y2: y(t),
+    stroke: C.line,
+    strokeWidth: "1"
+  }), /*#__PURE__*/React.createElement("text", {
+    x: ml - 10,
+    y: y(t) + 4,
+    textAnchor: "end",
+    fontSize: "13",
+    fill: C.faint
+  }, t === 0 ? "0" : fmtL(t).replace(".00", "")))), /*#__PURE__*/React.createElement("line", {
+    x1: ml,
+    y1: y0,
+    x2: W - mr,
+    y2: y0,
+    stroke: C.line,
+    strokeWidth: "1.5"
+  }), dates.map((d, i) => {
+    const flg = flaggedDay(i);
+    const darkCol = flg ? C.gray : C.green;
+    const lm = lastMonth[i],
+      tm = thisMonth[i],
+      ex = expected[i];
+    const lift = (tm ?? 0) - (ex ?? 0);
+    const barTop = Math.min(y(lm ?? 0), y(tm ?? 0));
+    return /*#__PURE__*/React.createElement("g", {
+      key: i
+    }, lm != null && /*#__PURE__*/React.createElement("rect", {
+      x: xLast(i),
+      y: y(lm),
+      width: bw,
+      height: Math.max(y0 - y(lm), 1),
+      rx: "3",
+      fill: "#e9ebef",
+      stroke: "#d3d7dd",
+      strokeWidth: "1"
+    }), tm != null && /*#__PURE__*/React.createElement("rect", {
+      x: xThis(i),
+      y: y(tm),
+      width: bw,
+      height: Math.max(y0 - y(tm), 1),
+      rx: "3",
+      fill: darkCol
+    }), ex != null && /*#__PURE__*/React.createElement("line", {
+      x1: xLast(i) - 2,
+      y1: y(ex),
+      x2: xThis(i) + bw + 2,
+      y2: y(ex),
+      stroke: C.green,
+      strokeWidth: "2",
+      strokeDasharray: "5 4"
+    }), /*#__PURE__*/React.createElement("text", {
+      x: slotCenter(i),
+      y: barTop - 8,
+      textAnchor: "middle",
+      fontSize: "15",
+      fontWeight: "800",
+      fill: lift >= 0 ? C.green : C.red
+    }, fmtLiftShort(lift)));
+  }), dates.map((d, i) => N <= 14 || i % 2 === 0 || i === N - 1 ? /*#__PURE__*/React.createElement("text", {
+    key: i,
+    x: slotCenter(i),
+    y: H - 8,
+    textAnchor: "middle",
+    fontSize: "12",
+    fill: C.faint
+  }, shortDate(d)) : null));
+}
+
+// Panel 3: cumulative sales this month vs plan-ish + daily bars vs June avg
+function SalesPanel({
+  sku
+}) {
+  const s = DATA.series[sku];
+  const dates = DATA.dates;
+  const june = s.value_june_avg;
+  const [showTable, setShowTable] = useState(false);
+
+  // cumulative this month (real)
+  let cum = 0;
+  const cumThis = s.value_today.map(v => cum += v || 0);
+  // "last month" baseline = cumulative June-average (flat weekday proxy)
+  const cumBase = dates.map((_, i) => june * (i + 1));
+  // plan = baseline nudged by the reco-implied expected lift (derived, clearly labelled)
+  const PLAN_LIFT = 0.0; // no separate plan series in source; plan tracks the June baseline
+  const cumPlan = cumBase.map(v => v * (1 + PLAN_LIFT));
+  const total = cumThis[cumThis.length - 1];
+  const baseTotal = cumBase[cumBase.length - 1];
+  const planTotal = cumPlan[cumPlan.length - 1];
+  const flaggedDay = i => tone(s.osa_status[i]) === "bad" || tone(s.sales_status[i]) === "bad";
+
+  // Graceful fallback if the sales export was missing.
+  if (!(panelOK("sales") && hasData(s.value_today))) {
+    return /*#__PURE__*/React.createElement(Card, {
+      style: {
+        marginBottom: 20
+      }
+    }, /*#__PURE__*/React.createElement("div", {
+      style: {
+        fontSize: 17,
+        fontWeight: 700,
+        marginBottom: 12
+      }
+    }, "3 · Sales vs Baseline"), /*#__PURE__*/React.createElement(NoData, {
+      label: "national__05_sales_swing.csv"
+    }));
+  }
+
+  // ----- cumulative chart -----
+  const W = 1120,
+    H = 300,
+    ml = 12,
+    mr = 168,
+    mt = 30,
+    mb = 30;
+  const iw = W - ml - mr,
+    ih = H - mt - mb;
+  const maxV = Math.max(...cumThis, ...cumBase, ...cumPlan) * 1.06;
+  const x = i => ml + i / (dates.length - 1) * iw;
+  const y = v => mt + ih - v / maxV * ih;
+  const pathThis = cumThis.map((v, i) => `${i ? "L" : "M"}${x(i)},${y(v)}`).join(" ");
+  const pathBase = cumBase.map((v, i) => `${i ? "L" : "M"}${x(i)},${y(v)}`).join(" ");
+  const pathPlan = cumPlan.map((v, i) => `${i ? "L" : "M"}${x(i)},${y(v)}`).join(" ");
+  const cumPoints = dates.map((d, i) => ({
+    cx: x(i),
+    cy: y(cumThis[i]),
+    title: shortDate(d),
+    markers: [{
+      cx: x(i),
+      cy: y(cumThis[i]),
+      color: C.ink
+    }],
+    rows: [{
+      label: "this month",
+      value: fmtL(cumThis[i]),
+      color: C.ink
+    }, {
+      label: "last month",
+      value: fmtL(cumBase[i]),
+      color: C.gray
+    }, {
+      label: "plan",
+      value: fmtL(cumPlan[i]),
+      color: C.green
+    }, {
+      label: flaggedDay(i) ? "flagged" : "citable",
+      value: flaggedDay(i) ? "not citable" : "trusted",
+      color: flaggedDay(i) ? C.amber : C.green
+    }]
+  }));
+  return /*#__PURE__*/React.createElement(Card, {
+    style: {
+      marginBottom: 20
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 17,
+      fontWeight: 700
+    }
+  }, "3 · Sales vs Baseline"), /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      justifyContent: "space-between",
+      flexWrap: "wrap",
+      gap: 8,
+      margin: "3px 0 6px"
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 15,
+      fontWeight: 700
+    }
+  }, "Cumulative sales - this month vs last month vs plan"), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 13,
+      color: C.faint
+    }
+  }, "dark = this month · gray = last month · green dashed = plan · solid dot = citable, hollow = flagged")), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 14,
+      color: C.sub,
+      marginBottom: 12
+    }
+  }, "Sales through ", shortDate(dates[dates.length - 1]), " (day ", dates.length, "): ", /*#__PURE__*/React.createElement("b", {
+    style: {
+      color: C.ink
+    }
+  }, fmtINR(total)), " this month ·", " ", /*#__PURE__*/React.createElement("b", {
+    style: {
+      color: C.sub
+    }
+  }, fmtINR(baseTotal)), " same weekdays last month · plan expected ", /*#__PURE__*/React.createElement("b", {
+    style: {
+      color: C.green
+    }
+  }, fmtINR(planTotal)), " by today"), /*#__PURE__*/React.createElement(ChartFrame, {
+    viewW: W,
+    viewH: H,
+    points: cumPoints
+  }, /*#__PURE__*/React.createElement("path", {
+    d: pathPlan,
+    fill: "none",
+    stroke: C.green,
+    strokeWidth: "2.5",
+    strokeDasharray: "7 5"
+  }), /*#__PURE__*/React.createElement("path", {
+    d: pathBase,
+    fill: "none",
+    stroke: C.gray,
+    strokeWidth: "2"
+  }), /*#__PURE__*/React.createElement("path", {
+    d: pathThis,
+    fill: "none",
+    stroke: C.ink,
+    strokeWidth: "2.5"
+  }), cumThis.map((v, i) => /*#__PURE__*/React.createElement("circle", {
+    key: i,
+    cx: x(i),
+    cy: y(v),
+    r: "4.5",
+    fill: flaggedDay(i) ? "#fff" : C.ink,
+    stroke: C.ink,
+    strokeWidth: "2"
+  })), (() => {
+    const salesLabelY = spreadLabels([{
+      key: "this",
+      y: y(total)
+    }, {
+      key: "last",
+      y: y(baseTotal) - 4
+    }, {
+      key: "plan",
+      y: y(planTotal) + 16
+    }], 17, mt + 12, mt + ih);
+    return /*#__PURE__*/React.createElement("g", null, /*#__PURE__*/React.createElement("text", {
+      x: x(dates.length - 1) + 8,
+      y: salesLabelY.this,
+      fontSize: "15",
+      fontWeight: "700",
+      fill: C.ink
+    }, "this month ", fmtL(total)), /*#__PURE__*/React.createElement("text", {
+      x: x(dates.length - 1) + 8,
+      y: salesLabelY.last,
+      fontSize: "14",
+      fill: C.gray,
+      fontWeight: "600"
+    }, "last month ", fmtL(baseTotal)), /*#__PURE__*/React.createElement("text", {
+      x: x(dates.length - 1) + 8,
+      y: salesLabelY.plan,
+      fontSize: "14",
+      fill: C.green,
+      fontWeight: "700"
+    }, "plan ", fmtL(planTotal)));
+  })()), /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      justifyContent: "space-between",
+      flexWrap: "wrap",
+      gap: 8,
+      margin: "26px 0 6px"
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 15,
+      fontWeight: 700
+    }
+  }, "Daily sales - this month vs same weekday last month"), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 13,
+      color: C.faint
+    }
+  }, "light bar = last month · dark bar = this month (green = citable) · dashed tick = expected · label = lift")), /*#__PURE__*/React.createElement(DailySalesChart, {
+    dates: dates,
+    thisMonth: s.value_today,
+    lastMonth: dates.map(() => june),
+    expected: dates.map(() => june),
+    flaggedDay: flaggedDay
+  }), /*#__PURE__*/React.createElement("div", {
+    style: {
+      marginTop: 16
+    }
+  }, /*#__PURE__*/React.createElement("button", {
+    onClick: () => setShowTable(!showTable),
+    style: {
+      background: "none",
+      border: `1px solid ${C.line}`,
+      borderRadius: 8,
+      padding: "8px 16px",
+      fontSize: 14,
+      cursor: "pointer",
+      color: C.ink
+    }
+  }, showTable ? "Hide day-by-day table" : "Show day-by-day table")), showTable && /*#__PURE__*/React.createElement("div", {
+    style: {
+      overflowX: "auto",
+      marginTop: 14
+    }
+  }, /*#__PURE__*/React.createElement("table", {
+    style: {
+      borderCollapse: "collapse",
+      width: "100%",
+      fontSize: 13.5
+    }
+  }, /*#__PURE__*/React.createElement("thead", null, /*#__PURE__*/React.createElement("tr", {
+    style: {
+      borderBottom: `1px solid ${C.line}`,
+      color: C.sub,
+      textAlign: "left"
+    }
+  }, ["day", "date", "gate", "this month (cum)", "last month (cum)", "plan (cum)", "day's lift", "lift vs last month (cum)"].map((h, i) => /*#__PURE__*/React.createElement("th", {
+    key: i,
+    style: {
+      padding: "9px 10px",
+      fontWeight: 600,
+      whiteSpace: "nowrap"
+    }
+  }, h)))), /*#__PURE__*/React.createElement("tbody", null, dates.map((d, i) => {
+    const conf = flaggedDay(i);
+    const dayLift = s.value_today[i] - june;
+    const cumLift = cumThis[i] - cumBase[i];
+    return /*#__PURE__*/React.createElement("tr", {
+      key: i,
+      style: {
+        borderBottom: `1px solid ${C.line}`,
+        color: conf ? C.faint : C.ink
+      }
+    }, /*#__PURE__*/React.createElement("td", {
+      style: {
+        padding: "9px 10px"
+      }
+    }, "d", i + 1), /*#__PURE__*/React.createElement("td", {
+      style: {
+        padding: "9px 10px"
+      }
+    }, shortDate(d)), /*#__PURE__*/React.createElement("td", {
+      style: {
+        padding: "9px 10px"
+      }
+    }, /*#__PURE__*/React.createElement("span", {
+      style: {
+        fontFamily: "ui-monospace, monospace",
+        fontSize: 12,
+        padding: "3px 9px",
+        borderRadius: 999,
+        background: conf ? "#eef0f2" : C.greenBg,
+        color: conf ? C.sub : C.green
+      }
+    }, conf ? "confounded" : "clear")), /*#__PURE__*/React.createElement("td", {
+      style: {
+        padding: "9px 10px",
+        fontVariantNumeric: "tabular-nums"
+      }
+    }, fmtINR(cumThis[i])), /*#__PURE__*/React.createElement("td", {
+      style: {
+        padding: "9px 10px",
+        fontVariantNumeric: "tabular-nums"
+      }
+    }, fmtINR(cumBase[i])), /*#__PURE__*/React.createElement("td", {
+      style: {
+        padding: "9px 10px",
+        fontVariantNumeric: "tabular-nums"
+      }
+    }, fmtINR(cumPlan[i])), /*#__PURE__*/React.createElement("td", {
+      style: {
+        padding: "9px 10px",
+        fontVariantNumeric: "tabular-nums",
+        color: dayLift >= 0 ? C.green : C.red
+      }
+    }, (dayLift >= 0 ? "+" : "") + fmtINR(dayLift)), /*#__PURE__*/React.createElement("td", {
+      style: {
+        padding: "9px 10px",
+        fontVariantNumeric: "tabular-nums",
+        color: cumLift >= 0 ? C.green : C.red
+      }
+    }, (cumLift >= 0 ? "+" : "") + fmtINR(cumLift)));
+  }))), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 12.5,
+      color: C.faint,
+      marginTop: 8
+    }
+  }, "\"Last month\" and \"plan\" use the June daily-average baseline (source data has no separate same-weekday or plan series). Confounded = OSA or sales flagged that day, so the lift isn't citable.")));
+}
+function VolAtRecoPanel({
+  sku
+}) {
+  const detail = DATA.city_detail[sku];
+  const vol = DATA.vol_at_reco[sku];
+  const dates = DATA.dates;
+  const [showAll, setShowAll] = useState(false);
+  if (!detail || !vol || !panelOK("city")) {
+    return /*#__PURE__*/React.createElement(Card, {
+      style: {
+        marginBottom: 20
+      }
+    }, /*#__PURE__*/React.createElement("div", {
+      style: {
+        fontSize: 17,
+        fontWeight: 700,
+        marginBottom: 12
+      }
+    }, "5 · Where: Volume at Reco Price"), /*#__PURE__*/React.createElement(NoData, {
+      label: "city__01c_price_top_cities.csv"
+    }));
+  }
+  const reco = detail.reco_sp;
+  const cellColor = sp => {
+    if (sp == null) return {
+      bg: "#f3f4f6",
+      fg: C.faint
+    };
+    if (sp >= reco * 0.95 && sp <= reco * 1.05) return {
+      bg: C.greenBg,
+      fg: C.green
+    };
+    if (sp > reco * 1.05) return {
+      bg: C.amberBg,
+      fg: C.amber
+    }; // above band = moving/drifting up
+    return {
+      bg: C.redBg,
+      fg: C.red
+    }; // below band = off (too cheap)
+  };
+  const gridRows = showAll ? detail.price_grid : detail.price_grid.slice(0, 12);
+  return /*#__PURE__*/React.createElement(Card, {
+    style: {
+      marginBottom: 20
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 17,
+      fontWeight: 700
+    }
+  }, "5 · Where: Volume at Reco Price"), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 14,
+      color: C.sub,
+      margin: "3px 0 16px"
+    }
+  }, "bars = share of tracked sales volume where the city price is within ±5% of reco, by day · table below = city × day selling prices (green = in reco band, amber = above band, red = below band)"), /*#__PURE__*/React.createElement("div", {
+    style: {
+      marginBottom: 20
+    }
+  }, dates.map((d, i) => /*#__PURE__*/React.createElement(RebarRow, {
+    key: i,
+    label: shortDate(d).replace("Jul ", "Jul "),
+    pct: vol[i] ?? 0
+  }))), /*#__PURE__*/React.createElement("div", {
+    style: {
+      overflowX: "auto"
+    }
+  }, /*#__PURE__*/React.createElement("table", {
+    style: {
+      borderCollapse: "separate",
+      borderSpacing: "3px 4px",
+      fontSize: 13,
+      width: "100%"
+    }
+  }, /*#__PURE__*/React.createElement("thead", null, /*#__PURE__*/React.createElement("tr", null, /*#__PURE__*/React.createElement("th", {
+    style: {
+      textAlign: "left",
+      color: C.sub,
+      fontWeight: 600,
+      padding: "0 8px"
+    }
+  }, "city"), /*#__PURE__*/React.createElement("th", {
+    style: {
+      textAlign: "right",
+      color: C.sub,
+      fontWeight: 600,
+      padding: "0 8px"
+    }
+  }, "vol"), dates.map((d, i) => /*#__PURE__*/React.createElement("th", {
+    key: i,
+    style: {
+      color: C.sub,
+      fontWeight: 600,
+      padding: "0 4px",
+      whiteSpace: "nowrap"
+    }
+  }, shortDate(d).replace("Jul ", ""))))), /*#__PURE__*/React.createElement("tbody", null, gridRows.map((row, ri) => /*#__PURE__*/React.createElement("tr", {
+    key: ri
+  }, /*#__PURE__*/React.createElement("td", {
+    style: {
+      padding: "0 8px",
+      whiteSpace: "nowrap",
+      color: C.ink
+    }
+  }, row.city), /*#__PURE__*/React.createElement("td", {
+    style: {
+      padding: "0 8px",
+      textAlign: "right",
+      color: C.sub,
+      fontVariantNumeric: "tabular-nums"
+    }
+  }, row.pct != null ? row.pct.toFixed(1) + "%" : "—"), row.cells.map((c, ci) => {
+    const sp = c ? c.sp : null;
+    const col = cellColor(sp);
+    return /*#__PURE__*/React.createElement("td", {
+      key: ci,
+      style: {
+        textAlign: "center"
+      }
+    }, /*#__PURE__*/React.createElement("div", {
+      style: {
+        background: col.bg,
+        color: col.fg,
+        borderRadius: 6,
+        padding: "5px 6px",
+        fontWeight: 600,
+        fontVariantNumeric: "tabular-nums",
+        minWidth: 30
+      }
+    }, sp != null ? sp.toFixed(0) : "—"));
+  })))))), detail.price_grid.length > 12 && /*#__PURE__*/React.createElement("button", {
+    onClick: () => setShowAll(!showAll),
+    style: {
+      marginTop: 14,
+      background: "none",
+      border: `1px solid ${C.line}`,
+      borderRadius: 8,
+      padding: "8px 16px",
+      fontSize: 14,
+      cursor: "pointer",
+      color: C.ink
+    }
+  }, showAll ? "Show top 12 cities" : `Show all ${detail.price_grid.length} cities`));
+}
+
+// ---------- App shell ----------
+function App() {
+  const [view, setView] = useState("Overall"); // "Overall" or sku string
+  const [scrollTarget, setScrollTarget] = useState(null);
+  const skus = DATA.skus;
+  const lastDate = DATA.dates[DATA.dates.length - 1];
+  const dayN = DATA.dates.length;
+  const shortLabel = s => s.bgr;
+  const tabs = [{
+    key: "Overall",
+    label: "Overall"
+  }].concat(skus.map(s => ({
+    key: s.sku,
+    label: shortLabel(s)
+  })));
+  return /*#__PURE__*/React.createElement("div", {
+    style: {
+      background: C.bg,
+      minHeight: "100vh",
+      fontFamily: "-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif",
+      color: C.ink,
+      padding: "28px 20px 60px"
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      maxWidth: 1280,
+      margin: "0 auto"
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 30,
+      fontWeight: 800,
+      letterSpacing: -0.3
+    }
+  }, getMeta().title || "SKU Promo Drill-down"), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 15,
+      color: C.sub,
+      marginTop: 5
+    }
+  }, "Day ", dayN, " · confirmed 2026-07-01 · data through ", shortDate(lastDate)), /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      gap: 10,
+      margin: "20px 0 24px",
+      flexWrap: "wrap"
+    }
+  }, tabs.map(t => {
+    const active = view === t.key;
+    return /*#__PURE__*/React.createElement("button", {
+      key: t.key,
+      onClick: () => {
+        setView(t.key);
+        setScrollTarget(null);
+      },
+      style: {
+        background: active ? C.ink : "#fff",
+        color: active ? "#fff" : C.sub,
+        border: `1px solid ${active ? C.ink : C.line}`,
+        borderRadius: 999,
+        padding: "8px 20px",
+        fontSize: 15,
+        fontWeight: 600,
+        cursor: "pointer"
+      }
+    }, t.label);
+  })), /*#__PURE__*/React.createElement(MissingBanner, null), view === "Overall" ? /*#__PURE__*/React.createElement(OverallView, {
+    onOpen: (sku, panel) => {
+      setView(sku);
+      setScrollTarget(panel || null);
+      if (!panel) window.scrollTo(0, 0);
+    }
+  }) : /*#__PURE__*/React.createElement(DeepDive, {
+    sku: view,
+    scrollTarget: scrollTarget
+  })));
+}
+
+// ---------- data loader + mount ----------
+function Root() {
+  const [status, setStatus] = useState("loading");
+  const [err, setErr] = useState("");
+  useEffect(() => {
+    fetch("data.json?t=" + Date.now()).then(r => {
+      if (!r.ok) throw new Error("HTTP " + r.status);
+      return r.json();
+    }).then(d => {
+      DATA = d;
+      setStatus("ready");
+    }).catch(e => {
+      setErr(String(e));
+      setStatus("error");
+    });
+  }, []);
+  if (status === "loading") return /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontFamily: "-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif",
+      color: "#5b6470",
+      padding: "80px 20px",
+      textAlign: "center",
+      fontSize: 16
+    }
+  }, "Loading latest data…");
+  if (status === "error") return /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontFamily: "-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif",
+      color: "#b4232a",
+      padding: "80px 20px",
+      textAlign: "center",
+      fontSize: 16
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontWeight: 700,
+      marginBottom: 6
+    }
+  }, "Couldn't load data.json"), /*#__PURE__*/React.createElement("div", {
+    style: {
+      color: "#5b6470"
+    }
+  }, err), /*#__PURE__*/React.createElement("div", {
+    style: {
+      color: "#5b6470",
+      marginTop: 10,
+      fontSize: 14
+    }
+  }, "Make sure data.json sits next to index.html on the host."));
+  return /*#__PURE__*/React.createElement(App, null);
+}
+ReactDOM.createRoot(document.getElementById("root")).render(/*#__PURE__*/React.createElement(Root, null));
+  </script>
+</body>
+</html>
