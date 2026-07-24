@@ -114,6 +114,14 @@ const panelOK = key => {
   const p = getMeta().panels;
   return p ? p[key] !== false : true;
 };
+// Retailer/platform name, from the run config (e.g. "blinkit" -> "Blinkit").
+// Lazy (function, not const): in the hosted build DATA is fetched asynchronously,
+// so this must be read at render time, not at module load.
+const PLATFORM_NAME = () => {
+  const p = getMeta().platform;
+  if (!p) return "the platform";
+  return p.charAt(0).toUpperCase() + p.slice(1);
+};
 // true if an array has at least one non-null value
 const hasData = arr => Array.isArray(arr) && arr.some(v => v != null);
 
@@ -798,7 +806,7 @@ function TopUpGapChart({
     title: "Jun avg",
     markers: [],
     rows: [{
-      label: "Blinkit top-up",
+      label: `${PLATFORM_NAME()} top-up`,
       value: fmtPP(juneTopup),
       color: C.gray
     }, {
@@ -812,7 +820,7 @@ function TopUpGapChart({
     title: shortDate(d),
     markers: [],
     rows: [{
-      label: "Blinkit top-up",
+      label: `${PLATFORM_NAME()} top-up`,
       value: fmtPP(topups[i]),
       color: topups[i] < 0 ? C.red : C.amber
     }, {
@@ -1399,12 +1407,12 @@ function OverallView({
     const tu = topUp(s);
     if (tone(skuLatest(s).sp_status) !== "good") bullets.push({
       t: "bad",
-      text: `${s.bgr}: Blinkit top-up (${fmtPP(tu)}) is running against the price raise - ask them not to backfill the withdrawn fund.`
+      text: `${s.bgr}: ${PLATFORM_NAME()} top-up (${fmtPP(tu)}) is running against the price raise - ask them not to backfill the withdrawn fund.`
     });
   });
   bullets.push({
     t: "warn",
-    text: "A brand-fund move lands only if Blinkit keeps its own top-up steady - align with Blinkit before any change."
+    text: `A brand-fund move lands only if ${PLATFORM_NAME()} keeps its own top-up steady - align with ${PLATFORM_NAME()} before any change.`
   });
   // clean read: pushes with OK sales
   const cleanSkus = pushes.filter(s => tone(skuLatest(s).sales_status) === "good" && tone(skuLatest(s).osa_status) === "good");
@@ -1662,7 +1670,7 @@ function DeepDive({
   });
   if (topUpGap > 1) readBullets.push({
     t: "bad",
-    text: `Blinkit is adding its own discount (${fmtPP(actualTopUp)}) against the price raise - ask them not to backfill the withdrawn fund.`
+    text: `${PLATFORM_NAME()} is adding its own discount (${fmtPP(actualTopUp)}) against the price raise - ask them not to backfill the withdrawn fund.`
   });
   readBullets.push({
     t: "neutral",
@@ -1686,7 +1694,7 @@ function DeepDive({
       color: C.sub,
       marginTop: 3
     }
-  }, topUpGap > 1 ? `off price - Blinkit top-up below plan (${fmtPP(actualTopUp)} observed vs ${fmtPP(plannedHold)} planned)` : "tracking to plan")), /*#__PURE__*/React.createElement("span", {
+  }, topUpGap > 1 ? `off price - ${PLATFORM_NAME()} top-up below plan (${fmtPP(actualTopUp)} observed vs ${fmtPP(plannedHold)} planned)` : "tracking to plan")), /*#__PURE__*/React.createElement("span", {
     style: {
       fontSize: 13,
       color: C.sub,
@@ -1752,12 +1760,12 @@ function DeepDive({
     tone: "good",
     label: "Planned shelf discount",
     value: fmtPct(plannedShelf),
-    sub: `${brandFund}% brand + ${plannedHold.toFixed(1)}pp Blinkit hold`
+    sub: `${brandFund}% brand + ${plannedHold.toFixed(1)}pp ${PLATFORM_NAME()} hold`
   }), /*#__PURE__*/React.createElement(MetricTile, {
     tone: "bad",
     label: `Actual shelf · ${shortDate(dates[L.n])}`,
     value: fmtPct(actualShelf),
-    sub: `${brandFund}% brand visible + ${actualTopUp.toFixed(1)}pp Blinkit top-up`
+    sub: `${brandFund}% brand visible + ${actualTopUp.toFixed(1)}pp ${PLATFORM_NAME()} top-up`
   }), /*#__PURE__*/React.createElement(MetricTile, {
     tone: "bad",
     label: "Shelf shortfall vs plan",
@@ -1770,7 +1778,7 @@ function DeepDive({
     sub: "declared brand fund visible on shelf"
   }), /*#__PURE__*/React.createElement(MetricTile, {
     tone: "warn",
-    label: "Blinkit top-up gap",
+    label: `${PLATFORM_NAME()} top-up gap`,
     value: fmtPP(topUpGap),
     sub: "planned hold minus actual top-up"
   })), /*#__PURE__*/React.createElement("div", {
@@ -1781,7 +1789,7 @@ function DeepDive({
       marginTop: 16,
       fontSize: 15
     }
-  }, /*#__PURE__*/React.createElement("b", null, "Read:"), " Brand fund is visible, but Blinkit top-up is ", fmtPP(topUpGap), " off the planned hold."), /*#__PURE__*/React.createElement("div", {
+  }, /*#__PURE__*/React.createElement("b", null, "Read:"), " Brand fund is visible, but ", PLATFORM_NAME(), " top-up is ", fmtPP(topUpGap), " off the planned hold."), /*#__PURE__*/React.createElement("div", {
     style: {
       fontSize: 15,
       fontWeight: 700,
@@ -1822,7 +1830,7 @@ function DeepDive({
       fontWeight: 700,
       margin: "22px 0 6px"
     }
-  }, "Blinkit top-up / brand pass-through gap"), panelOK("shelf") && hasData(s.disc_current) ? /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement(TopUpGapChart, {
+  }, PLATFORM_NAME(), " top-up / brand pass-through gap"), panelOK("shelf") && hasData(s.disc_current) ? /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement(TopUpGapChart, {
     dates: dates,
     topups: s.disc_current.map(d => d - brandFund),
     planned: plannedHold,
@@ -1850,7 +1858,7 @@ function DeepDive({
       background: C.amber,
       display: "inline-block"
     }
-  }), "Above zero = Blinkit top-up visible on shelf"), /*#__PURE__*/React.createElement("div", {
+  }), "Above zero = ", PLATFORM_NAME(), " top-up visible on shelf"), /*#__PURE__*/React.createElement("div", {
     style: {
       display: "flex",
       alignItems: "center",
@@ -1872,7 +1880,7 @@ function DeepDive({
       color: C.sub,
       marginTop: 8
     }
-  }, "Bars = shelf discount minus declared brand fund (the top-up Blinkit adds). Dashed line = planned hold ", fmtPP(plannedHold), ". Red bars mean shelf discount is below the declared brand fund.")) : /*#__PURE__*/React.createElement(NoData, {
+  }, "Bars = shelf discount minus declared brand fund (the top-up ", PLATFORM_NAME(), " adds). Dashed line = planned hold ", fmtPP(plannedHold), ". Red bars mean shelf discount is below the declared brand fund.")) : /*#__PURE__*/React.createElement(NoData, {
     label: "national__01b_final_sp.csv"
   })), /*#__PURE__*/React.createElement(Card, {
     style: {
